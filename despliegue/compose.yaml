@@ -1,0 +1,94 @@
+# Despliegue reproducible de GOFR (registro de establecimientos mCSD) con su servidor FHIR (HAPI) y Redis.
+# Cambia respecto de instant/docker/docker-compose.yml: HAPI guarda en PostgreSQL y no en H2 dentro del
+# contenedor, el índice Lucene queda en el volumen, las imágenes tienen versión fija y GOFR reintenta
+# hasta que HAPI responde.
+# Puertos solo en 127.0.0.1. Credenciales: .env generado por scripts/generar_env.py (no versionado).
+name: gofr
+
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hapi
+      POSTGRES_USER: hapi
+      POSTGRES_PASSWORD: ${GOFR_DB_PASSWORD:?generar .env con scripts/generar_env.py}
+    volumes:
+      - db:/var/lib/postgresql/data
+
+  # HAPI corre como el usuario 65532 y el volumen nuevo queda de root: sin esto Hibernate Search
+  # no puede crear el índice Lucene y el servidor no arranca.
+  permisos:
+    image: alpine:3.20
+    command: ["chown", "-R", "65532:65532", "/data/hapi"]
+    volumes:
+      - hapi:/data/hapi
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis:/data
+
+  # GOFR 2.2 está probado con HAPI 5.5 y depende de su particionado por URL (/fhir/DEFAULT/...).
+  fhir:
+    image: hapiproject/hapi:v5.5.2-distroless
+    restart: unless-stopped
+    depends_on:
+      db: {condition: service_started}
+      permisos: {condition: service_completed_successfully}
+    ports:
+      - "127.0.0.1:${GOFR_FHIR_PUERTO:-18303}:8080"
+    environment:
+      hapi.fhir.fhir_version: R4
+      spring.datasource.url: jdbc:postgresql://db:5432/hapi
+      spring.datasource.username: hapi
+      spring.datasource.password: ${GOFR_DB_PASSWORD}
+      spring.datasource.driverClassName: org.postgresql.Driver
+      # HapiFhirPostgres94Dialect no existe en HAPI 5.5.
+      spring.jpa.properties.hibernate.dialect: org.hibernate.dialect.PostgreSQL10Dialect
+      # Guía mCSD que GOFR usa para sus perfiles de establecimientos y jurisdicciones.
+      hapi.fhir.implementationguides.mcsd.name: ihe.iti.mcsd
+      hapi.fhir.implementationguides.mcsd.version: 3.5.0
+      hapi.fhir.bulk_export_enabled: "true"
+      hapi.fhir.subscription.resthook_enabled: "true"
+      hapi.fhir.subscription.websocket_enabled: "true"
+      # Cada fuente de datos que se reconcilia en GOFR vive en su propia partición.
+      hapi.fhir.partitioning.enabled: "true"
+      hapi.fhir.partitioning.allow_references_across_partitions: "true"
+      hapi.fhir.partitioning.partitioning_include_in_search_hashes: "false"
+      hapi.fhir.enable_index_missing_fields: "true"
+      hapi.fhir.auto_create_placeholder_reference_targets: "true"
+      hapi.fhir.client_id_strategy: ANY
+      spring.jpa.properties.hibernate.search.enabled: "true"
+      spring.jpa.properties.hibernate.search.backend.type: lucene
+      spring.jpa.properties.hibernate.search.backend.analysis.configurer: ca.uhn.fhir.jpa.search.HapiLuceneAnalysisConfigurer
+      spring.jpa.properties.hibernate.search.backend.directory.type: local-filesystem
+      spring.jpa.properties.hibernate.search.backend.directory.root: /data/hapi/lucene
+      spring.jpa.properties.hibernate.search.backend.lucene_version: lucene_current
+    volumes:
+      - hapi:/data/hapi
+
+  # Al arrancar por primera vez GOFR carga sus perfiles (fshmcsd) y crea la partición DEFAULT.
+  # Espera a HAPI solo 120 s; si HAPI tarda más (primer arranque con la base vacía), el reinicio lo reintenta.
+  gofr:
+    image: intrahealth/gofr:${GOFR_VERSION:-22d71e4b}
+    restart: unless-stopped
+    depends_on: [fhir, redis]
+    ports:
+      - "127.0.0.1:${GOFR_PUERTO:-18302}:4000"
+    environment:
+      mCSD__server__protocal: http
+      mCSD__server__host: fhir
+      mCSD__server__port: "8080"
+      mCSD__server__basePath: fhir
+      app__site__path: /src/gofr-backend/docker-site
+      app__core__path: /src/gofr-backend/lib
+      app__idp: gofr
+      REDIS_HOST: redis
+
+volumes:
+  db:
+  hapi:
+  redis:

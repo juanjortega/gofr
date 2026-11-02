@@ -1,0 +1,54 @@
+# Capa opcional: iHRIS 5 sobre el mismo HAPI de GOFR (partición DEFAULT), para tener prestadores y
+# establecimientos en un solo servidor FHIR. Uso:
+#   docker compose -f compose.yaml -f compose.ihris.yaml up -d
+# Ver la sección «Servidor FHIR compartido con iHRIS» del README para lo que cambia respecto del
+# despliegue de iHRIS sobre HAPI 6.8 (juanjortega/iHRIS, rama despliegue).
+
+x-ihris-imagen: &ihris-imagen ihris/ihris:${IHRIS_VERSION:-09307d35357b04fb01d0d26a5bd43a6fe2aca56f}
+
+services:
+  redis-ihris:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-ihris:/data
+
+  es:
+    image: elasticsearch:7.17.6
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      xpack.security.enabled: "false"
+    volumes:
+      - es:/usr/share/elasticsearch/data
+
+  # La imagen ihris-config publicada no trae site/ig/fsh-generated; se carga con la imagen ihris.
+  ihris-configuracion:
+    image: *ihris-imagen
+    depends_on: [fhir]
+    restart: on-failure
+    working_dir: /src/tools
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        until wget -q -O /dev/null $$IHRIS_FHIR__BASE/metadata; do sleep 5; done;
+        node load.js --server $$IHRIS_FHIR__BASE /src/ihris-backend/site/ig/fsh-generated/resources/*.json
+    environment:
+      IHRIS_FHIR__BASE: http://fhir:8080/fhir/DEFAULT
+
+  ihris:
+    image: *ihris-imagen
+    restart: on-failure
+    depends_on: [fhir, redis-ihris, es]
+    ports:
+      - "127.0.0.1:${IHRIS_PUERTO:-18301}:3000"
+    environment:
+      IHRIS_FHIR__BASE: http://fhir:8080/fhir/DEFAULT
+      IHRIS_REDIS__URL: redis://redis-ihris
+      IHRIS_ELASTICSEARCH__BASE: http://es:9200
+
+volumes:
+  redis-ihris:
+  es:

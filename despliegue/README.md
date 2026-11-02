@@ -47,9 +47,10 @@ python -I chile/preparar_fuentes.py establecimientos_20261028.csv ESTABLECIMIENT
 GOFR_CLAVE=gofr python -I chile/subir_fuente.py DEIS salida/deis.csv
 GOFR_CLAVE=gofr python -I chile/subir_fuente.py Geoportal salida/geoportal.csv
 GOFR_CLAVE=gofr python -I chile/reconciliar.py
+GOFR_CLAVE=gofr python -I chile/marcar_sin_coincidencia.py 4
 ```
 
-`preparar_fuentes.py` deja ambas en el formato que espera GOFR (código, nombre, región, comuna, latitud y longitud, separado por comas), con la jerarquía región → comuna → establecimiento. Región y comuna se nombran desde el CUT con los nombres del DEIS para que la jerarquía coincida entre fuentes. `reconciliar.py` crea el par Geoportal (fuente 1) → DEIS (fuente 2, lista maestra) y calcula los puntajes nivel por nivel.
+`preparar_fuentes.py` deja ambas en el formato que espera GOFR (código, nombre, región, comuna, latitud y longitud, separado por comas), con la jerarquía región → comuna → establecimiento. Región y comuna se nombran desde el CUT con los nombres del DEIS para que la jerarquía coincida entre fuentes. `reconciliar.py` crea el par Geoportal (fuente 1) → DEIS (fuente 2, lista maestra) y calcula los puntajes nivel por nivel; deja el resultado de cada nivel en `reco_nivel<N>.json`. `marcar_sin_coincidencia.py` marca como «sin coincidencia» lo que quedó sin coincidencia exacta en ese nivel (revisar el JSON antes: aplica a todos).
 
 Resultado verificado (las dos subidas juntas tardaron más de 10 minutos):
 
@@ -60,8 +61,28 @@ Resultado verificado (las dos subidas juntas tardaron más de 10 minutos):
 | Establecimiento | 5.295 | 5.276 | 19 |
 
 - Las coincidencias exactas son por código DEIS, incluidos 21 establecimientos que cambiaron de nombre entre los dos cortes.
-- Los 19 sin coincidencia exacta son establecimientos del geoportal que ya no están vigentes en el DEIS. GOFR les propone candidatos por nombre que son falsos positivos (por ejemplo, «SAPU Baquedano» con «SAPU Papudo», de otra comuna); se marcan como «sin coincidencia» en la interfaz.
+- Los 19 sin coincidencia exacta son establecimientos del geoportal que ya no están vigentes en el DEIS. GOFR les propone candidatos por nombre que son falsos positivos (por ejemplo, «SAPU Baquedano» con «SAPU Papudo», de otra comuna); quedaron marcados como «sin coincidencia» con `marcar_sin_coincidencia.py`. Una nueva reconciliación da 5.276 exactos, 19 sin coincidencia y 0 pendientes.
 - 130 establecimientos del DEIS no están en el geoportal: son posteriores a junio.
+
+### Farmacias
+
+No hay una fuente abierta con el registro completo de farmacias. La de datos.gob.cl («Farmacias en Chile», Minsal) apunta a la API de Farmanet (`midas.minsal.cl/farmacia_v2/WS/getLocales.php`), que solo devuelve los locales que abren el día de la consulta (656 un domingo) y las farmacias de turno; no sirve como lista maestra. El registro del ISP no está publicado como datos abiertos. Queda pendiente conseguirlo por convenio.
+
+## Servidor FHIR compartido con iHRIS
+
+`compose.ihris.yaml` agrega iHRIS 5 sobre el mismo HAPI, en la partición `DEFAULT`:
+
+```bash
+docker compose -f compose.yaml -f compose.ihris.yaml up -d
+```
+
+Probado en un stack aparte (con imágenes equivalentes reconstruidas localmente): la configuración de iHRIS carga (316 de 317 recursos), iHRIS responde en :18301 con login de `demo@ihris.org`, y GOFR sigue funcionando. Diferencias respecto de iHRIS sobre HAPI 6.8:
+
+- `ImplementationGuide/ihris` no carga (HAPI 5.5 responde 422). Es un recurso descriptivo; iHRIS no lo usa para funcionar.
+- 35 CodeSystem y ValueSet estándar de HL7 (`location-mode`, `address-use`, `service-type`, etc.) existen en ambas configuraciones con el mismo id y la misma URL canónica; queda la copia que se carga al final (iHRIS). También se sobrescribe `StructureDefinition/ContactPoint`.
+- El log de iHRIS muestra `Resource Basic/ihris-role-hrmanager is not known`, igual que sobre HAPI 6.8: es un defecto de la configuración de demostración, no del servidor compartido.
+
+Es la única forma de compartir servidor: GOFR no funciona sobre HAPI 6.8 ni sobre otro servidor FHIR porque necesita las particiones por URL y acceso SQL a la base. El costo es quedar en HAPI 5.5.2 (2021), sin parches de seguridad recientes.
 
 ## Advertencias
 
@@ -69,5 +90,5 @@ Resultado verificado (las dos subidas juntas tardaron más de 10 minutos):
 
 ## Pendiente
 
-- Usar el mismo servidor FHIR que iHRIS: hoy cada uno tiene su HAPI, porque GOFR necesita HAPI 5.5 con particiones y acceso SQL a su base, e iHRIS usa 6.8.
-- Sumar otras fuentes (farmacias del ISP, SEREMI) y publicar la lista maestra como mCSD.
+- Conseguir el registro de farmacias (ISP o SEREMI) y sumarlo como fuente.
+- Publicar la lista maestra reconciliada como mCSD hacia el servidor FHIR de producción.

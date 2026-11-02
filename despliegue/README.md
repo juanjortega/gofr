@@ -21,6 +21,9 @@ Los puertos solo escuchan en 127.0.0.1. Se cambian con `GOFR_PUERTO` y `GOFR_FHI
 | `intrahealth/gofr:latest` y `redis:alpine` | Versiones fijas |
 | Puertos 8080 y 4000 abiertos en todas las interfaces | Solo 127.0.0.1, en puertos que no chocan con iHRIS (18300 y 18301) |
 | `app__installed=${false}` (interpolación inválida) | Se omite: GOFR carga sus datos iniciales al primer arranque |
+| GOFR no sabe dónde está la base de HAPI y busca `localhost:5432` | `database__*` apunta al servicio `db` (ver abajo) |
+
+**GOFR usa la base de HAPI directamente.** Al subir una fuente escribe, además de los `Location` por FHIR, una tabla SQL con el nombre de la partición en la misma base PostgreSQL de HAPI (`modules/uploadToSql.js`), y la reconciliación lee esas tablas. Sin `database__*` la subida parece terminar bien, pero no se crea la tabla y la reconciliación queda colgada en «1/3 Loading Source2 and Source1 Data» (`ECONNREFUSED 127.0.0.1:5432` o `relation "…" does not exist` en el log). Por esta dependencia GOFR no puede usar un servidor FHIR que no sea un HAPI con PostgreSQL al que tenga acceso SQL.
 
 Se mantiene HAPI 5.5.2 porque GOFR depende de su particionado por URL (`/fhir/DEFAULT/...`, una partición por fuente de datos). Con HAPI 5.5 el dialecto es `PostgreSQL10Dialect`, porque `HapiFhirPostgres94Dialect` no existe en esa versión.
 
@@ -28,7 +31,43 @@ Se mantiene HAPI 5.5.2 porque GOFR depende de su particionado por URL (`/fhir/DE
 
 GOFR carga sus perfiles en la partición `DEFAULT` y termina con `Done loading Default data`: 48 StructureDefinition, 29 CodeSystem, 30 ValueSet, 4 Questionnaire y 1 Location, sin errores. Si HAPI tarda más de 120 s en arrancar con la base vacía, GOFR sale y `restart: unless-stopped` lo vuelve a intentar.
 
+Usuario de ejemplo: `root@gofr.org`, contraseña `gofr` (del IG de GOFR; verificado con `POST /auth/login`). Cambiarla antes de exponer el servicio.
+
+## Establecimientos de Chile (`chile/`)
+
+Scripts para cargar dos fuentes oficiales y reconciliarlas, con la API que usa la interfaz:
+
+| Fuente | Origen | Vigentes |
+|---|---|---|
+| DEIS | [datos.gob.cl, «Establecimientos de Salud»](https://datos.gob.cl/dataset/establecimientos-de-salud-vigentes) (CSV `;`, corte 28-10-2026) | 5.406 |
+| Geoportal | [IDE-Minsal, capa de establecimientos](https://www.minsal.cl/?p=96477) (shapefile, corte 12-06-2026) | 5.295 |
+
+```bash
+python -I chile/preparar_fuentes.py establecimientos_20261028.csv ESTABLECIMIENTOS_12062026_DES.zip salida/
+GOFR_CLAVE=gofr python -I chile/subir_fuente.py DEIS salida/deis.csv
+GOFR_CLAVE=gofr python -I chile/subir_fuente.py Geoportal salida/geoportal.csv
+GOFR_CLAVE=gofr python -I chile/reconciliar.py
+```
+
+`preparar_fuentes.py` deja ambas en el formato que espera GOFR (código, nombre, región, comuna, latitud y longitud, separado por comas), con la jerarquía región → comuna → establecimiento. Región y comuna se nombran desde el CUT con los nombres del DEIS para que la jerarquía coincida entre fuentes. `reconciliar.py` crea el par Geoportal (fuente 1) → DEIS (fuente 2, lista maestra) y calcula los puntajes nivel por nivel.
+
+Resultado verificado (las dos subidas juntas tardaron más de 10 minutos):
+
+| Nivel | Fuente 1 | Coincidencia exacta | Solo con candidatos |
+|---|---|---|---|
+| Región | 16 | 16 | 0 |
+| Comuna | 344 | 344 | 0 |
+| Establecimiento | 5.295 | 5.276 | 19 |
+
+- Las coincidencias exactas son por código DEIS, incluidos 21 establecimientos que cambiaron de nombre entre los dos cortes.
+- Los 19 sin coincidencia exacta son establecimientos del geoportal que ya no están vigentes en el DEIS. GOFR les propone candidatos por nombre que son falsos positivos (por ejemplo, «SAPU Baquedano» con «SAPU Papudo», de otra comuna); se marcan como «sin coincidencia» en la interfaz.
+- 130 establecimientos del DEIS no están en el geoportal: son posteriores a junio.
+
+## Advertencias
+
+- `uploadToSql.js` arma los `insert` interpolando código e id del CSV sin escapar (solo el nombre usa `escapeLiteral`). Subir solo CSV de fuentes confiables.
+
 ## Pendiente
 
-- Cargar los establecimientos de Chile (DEIS) y probar la reconciliación entre fuentes.
-- Usar el mismo servidor FHIR que iHRIS: hoy cada uno tiene su HAPI, porque GOFR necesita HAPI 5.5 con particiones e iHRIS usa 6.8.
+- Usar el mismo servidor FHIR que iHRIS: hoy cada uno tiene su HAPI, porque GOFR necesita HAPI 5.5 con particiones y acceso SQL a su base, e iHRIS usa 6.8.
+- Sumar otras fuentes (farmacias del ISP, SEREMI) y publicar la lista maestra como mCSD.

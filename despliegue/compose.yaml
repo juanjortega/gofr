@@ -87,6 +87,13 @@ services:
       app__core__path: /src/gofr-backend/lib
       app__idp: gofr
       REDIS_HOST: redis
+      # La reconciliación lee las jerarquías directo de la base de HAPI (modules/postgres.js), no por FHIR.
+      # Sin esto apunta a localhost:5432 y el cálculo de puntajes queda colgado en "1/3 Loading".
+      database__host: db
+      database__port: "5432"
+      database__dbname: hapi
+      database__username: hapi
+      database__password: ${GOFR_DB_PASSWORD}
 
 volumes:
   db:

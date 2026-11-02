@@ -76,7 +76,7 @@ No hay una fuente abierta con el registro completo de farmacias. La de datos.gob
 docker compose -f compose.yaml -f compose.ihris.yaml up -d
 ```
 
-Probado en un stack aparte (con imágenes equivalentes reconstruidas localmente): la configuración de iHRIS carga (316 de 317 recursos), iHRIS responde en :18301 con login de `demo@ihris.org`, y GOFR sigue funcionando. Diferencias respecto de iHRIS sobre HAPI 6.8:
+Probado en un stack aparte con las imágenes publicadas y volúmenes vacíos: la configuración de iHRIS carga (316 de 317 recursos), iHRIS responde en :18301 con login de `demo@ihris.org`, y GOFR sigue funcionando con login de `root@gofr.org`. El cargador de iHRIS envía en paralelo y puede dejar algún recurso sin crear con un 409; en ese caso se repite la carga con `docker compose -f compose.yaml -f compose.ihris.yaml up -d --no-deps --force-recreate ihris-configuracion`. Diferencias respecto de iHRIS sobre HAPI 6.8:
 
 - `ImplementationGuide/ihris` no carga (HAPI 5.5 responde 422). Es un recurso descriptivo; iHRIS no lo usa para funcionar.
 - 35 CodeSystem y ValueSet estándar de HL7 (`location-mode`, `address-use`, `service-type`, etc.) existen en ambas configuraciones con el mismo id y la misma URL canónica; queda la copia que se carga al final (iHRIS). También se sobrescribe `StructureDefinition/ContactPoint`.
